@@ -1,0 +1,22 @@
+{
+  "name": "Mine Sweep",
+  "genre": "puzzle",
+  "dim": "2D",
+  "mode": "Co-op",
+  "players": "1–6",
+  "hook": "One huge minefield. Clear it as a team.",
+  "how": "Everyone digs the same field at once, and you can see each other's cursors. Numbers tell you how many mines touch a square: flag the mines, dig the rest. Every boom costs the team one of three lives. Clear the field fast to get on the board.",
+  "controls": "Click to dig, right-click to flag, click a number to dig around it; on touch, tap to dig, long-press to flag (or switch with the Dig/Flag button), pinch to zoom",
+  "uses": [
+    ["Host-run rules", "The host's browser places the mines and checks every dig; if it leaves, the next player takes over."],
+    ["Bots", "Bot sweepers dig and flag alongside you when the room is quiet."],
+    ["Leaderboard", "The team's fastest clear."],
+    ["Live sync", "Everyone's cursor, flag and dig shows up for the whole team."],
+    ["Live ops", "The owner can change the mine count and lives without a new deploy."]
+  ],
+  "ideas": [
+    "Make it a snowy field with buried presents instead of mines",
+    "Add a power-up square that shows three mines for ten seconds",
+    "Give each player their own score for safe digs"
+  ]
+}

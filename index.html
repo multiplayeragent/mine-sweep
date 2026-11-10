@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mine Sweep</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: #163036; }
+  body { font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #f2f6ee; user-select: none; -webkit-user-select: none; }
+  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; touch-action: none; cursor: pointer; }
+  .hud { position: fixed; pointer-events: none; text-shadow: 0 1px 3px #000a; }
+  #stats { top: max(10px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); display: flex; gap: 8px; text-shadow: none; }
+  #stats span { padding: 6px 12px; border-radius: 999px; background: #0d2226d9; font: 800 17px system-ui, sans-serif; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #side { position: fixed; top: max(8px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); display: flex; flex-direction: column; gap: 8px; }
+  #side button { width: 44px; height: 44px; border-radius: 12px; border: 1px solid #ffffff33; background: #0d2226d9; color: #fff; font: 700 20px system-ui, sans-serif; cursor: pointer; }
+  #mode { position: fixed; right: max(14px, env(safe-area-inset-right)); bottom: calc(max(14px, env(safe-area-inset-bottom)) + 22px); width: 76px; height: 76px; border-radius: 50%;
+          border: 3px solid #ffffff88; background: #0d2226e6; color: #fff; font: 800 15px system-ui, sans-serif; touch-action: none; line-height: 1.1; }
+  #mode.flag { background: #e8453c; border-color: #fff; }
+  #mode[hidden], #over[hidden], #side[hidden] { display: none; }
+  #net { bottom: max(8px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); font-size: 12px; opacity: .8; white-space: nowrap; }
+  #hint { top: calc(max(10px, env(safe-area-inset-top)) + 52px); left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px); box-sizing: border-box; padding: 6px 14px; border-radius: 12px; background: #0d2226e6;
+          text-align: center; font-size: 14px; font-weight: 700; color: #ffe08a; text-shadow: none; transition: opacity .8s; }
+  @media (min-width: 900px) { #hint { top: max(14px, env(safe-area-inset-top)); white-space: nowrap; } }
+  #toast { top: 40%; left: 16px; right: 16px; text-align: center; font-size: 26px; font-weight: 900; color: #fff; opacity: 0; transition: opacity .3s, transform .3s; transform: scale(.85); }
+  #toast.on { opacity: 1; transform: scale(1); }
+  #over { position: fixed; inset: 0; display: grid; place-items: center; background: #0a1a1db0; }
+  .card { width: min(380px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; padding: 22px; border-radius: 16px; background: #1d3a40; border: 1px solid #ffffff22; text-align: center; box-sizing: border-box; }
+  .card h2 { margin: 0 0 4px; font-size: 26px; color: #ffe08a; }
+  .card h3 { margin: 14px 0 4px; font-size: 14px; color: #9be07a; text-align: left; }
+  .card ol { text-align: left; margin: 0; padding-left: 24px; font-size: 14px; } .card li span { float: right; font-variant-numeric: tabular-nums; }
+  button.go { width: 100%; min-height: 48px; margin-top: 14px; border: 0; border-radius: 12px; background: #7bd35a; color: #0b2306; font: 800 17px system-ui, sans-serif; cursor: pointer; }
+</style>
+<script src="https://cdn.multiplayeragent.com/sdk/mp.global.js"></script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="hud" id="stats"><span id="left">💣 0</span><span id="lives"></span><span id="clock">0:00</span></div>
+<div id="side"><button id="zin" title="Zoom in">+</button><button id="zout" title="Zoom out">−</button><button id="zfit" title="See the whole field">⤢</button></div>
+<button id="mode" hidden>⛏<br>Dig</button>
+<div class="hud" id="hint"></div>
+<div class="hud" id="toast"></div>
+<div class="hud" id="net">Connecting…</div>
+<div id="over" hidden><div class="card">
+  <h2 id="overTitle">Field cleared!</h2>
+  <div id="overText"></div>
+  <div id="boardBox"><h3>Fastest clears</h3><ol id="board"><li>Loading…</li></ol></div>
+  <button class="go" id="again">New field</button>
+</div></div>
+<script>
+/* ═══ MINE SWEEP · a Multiplayer Agent starter ══════════════════════════════════════════
+ * One big minefield, cleared together. Co-op, 1–6 players; bot sweepers fill empty seats.
+ *
+ * WHERE THINGS ARE (search for the "── " headers):
+ *   CONFIG ........ field size, mines, lives, bots, timers
+ *   CONNECTION .... MP_CONNECT, joining, the offline room, who is host, live ops
+ *   FIELD ......... where the mines are (from a seed), numbers, flood fill
+ *   RULES (HOST) .. digs, flags, booms, win and loss, new fields
+ *   BOTS .......... sweepers that read the numbers like a person (and glide a cursor)
+ *   ME ............ my cursor, my digs and flags (shown at once, then confirmed)
+ *   DRAW .......... camera, grass and sand, numbers, flags, booms, everyone's cursors
+ *   HUD & CARD .... mines left, lives, timer, the result card, leaderboard
+ *   INPUT ......... click/right-click, tap/long-press, drag to pan, pinch/wheel to zoom
+ *
+ * HOW THE MULTIPLAYER WORKS (a relay room: no server code):
+ *   - Each player writes its OWN entity: `cur` (one JSON field: where its cursor is) up to
+ *     10 times a second, `hb` (heartbeat) once a second, `n`/`c` (name, color) once.
+ *   - The HOST is the lowest sessionId among live players (heartbeat seen in the last 3s),
+ *     worked out every frame. Only the host writes the shared fields: `game` (round id,
+ *     version `v`, phase, seed, first dig, lives, timers), `field` (one letter per square:
+ *     . hidden, o open, x boom, A–H a flag in its placer's color) and `bots`.
+ *     A new host adopts all of it from state.
+ *   - The mines come from `seed` and the first square dug (`safe`, always clear), through a
+ *     seeded PRNG, so every client knows the numbers without anything more in state.
+ *   - Everyone else sends intents: "dig" {x, y} (on a number: dig around it), "flag" {x, y},
+ *     "again" {}. Your dig opens at once on your screen; the host's field confirms it.
+ *   - ?attract plays offline with bots only (the preview video is recorded from it).
+ *   - Leaderboard "fastest-clear": time from first dig to a cleared field, stored as
+ *     3600000 - ms (boards keep the highest score), shown on the result card.
+ *   - Live ops (no code): live config `mines` and `lives` apply from the next field.
+ */
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────────────
+const CONFIG = {
+  cols: 30, rows: 16,   // the field in squares (it turns sideways on a phone held upright)
+  mines: 80,            // mines in a field (live config: mines)
+  lives: 3,             // booms the team can take (live config: lives)
+  seats: 3,             // bots fill the room up to this many sweepers
+  botThinkMs: [900, 1800], // a bot's pause between moves (min, max)
+  botMistake: 0,        // chance a bot with no sure move guesses blind (and may hit a mine)
+  wonFor: 25000,        // ms the "cleared" card shows before a new field
+  lostFor: 12000,       // ms the "out of lives" card shows before a new field
+  longPressMs: 380,     // touch: hold this long to flag
+  board: "fastest-clear",
+};
+const BOT_NAMES = ["Digby", "Sweepy", "Pip", "Moss", "Clover", "Pebble"];
+const COLORS = ["#e8453c", "#3d8bfd", "#f5b400", "#a35ee8", "#ff7ab8", "#18b8a8", "#ff8c1a", "#6b7cff"];
+const FLAGS = "ABCDEFGH"; // a flag is stored as the letter of its placer's color
+const NUM_COLORS = ["", "#1f6fd6", "#2e8b3a", "#d63a2f", "#6a35b0", "#a8551b", "#13878a", "#222", "#666"];
+
+// ── CONNECTION ──────────────────────────────────────────────────────────────────────
+// The builder fills these in for this game. Downloaded from GitHub? Put your own pk_ key here.
+const MP_CONNECT = {
+  key: 'pk_REPLACE_ME',
+  room: 'mine-sweep',
+  endpoint: 'wss://live.multiplayeragent.com',
+  apiUrl: 'https://api.multiplayeragent.com',
+};
+const ATTRACT = new URLSearchParams(location.search).has("attract");
+
+/** Same shape as the SDK client, kept in this tab: offline play and ?attract. */
+function localRoom() {
+  const id = "local", state = { entities: { players: { [id]: {} } }, shared: {} }, subs = [];
+  let queued = false;
+  const emit = () => { if (!queued) { queued = true; queueMicrotask(() => { queued = false; subs.forEach((f) => f(state)); }); } };
+  const put = (o, k, v) => { if (typeof k === "object") Object.assign(o, k); else o[k] = v; emit(); };
+  return {
+    sessionId: id, state, offline: true, live: { config: {}, active: [] },
+    me: { set: (k, v) => put(state.entities.players[id], k, v) },
+    setShared: (k, v) => put(state.shared, k, v),
+    onState: (f) => { subs.push(f); f(state); }, onJoin() {}, onLeave() {}, on() {}, send() {}, onLive() {},
+    onDisconnect() {}, onReconnect() {}, leave: async () => {},
+  };
+}
+async function connect() {
+  if (ATTRACT || typeof MP === "undefined") return localRoom();
+  try {
+    const mp = await Promise.race([MP.join({ ...MP_CONNECT }), new Promise((_, no) => setTimeout(() => no(new Error("timed out")), 10000))]);
+    window.mp = mp; // the builder calls window.mp.leave() when the page closes
+    return mp;
+  } catch (e) {
+    console.warn("Playing offline:", e && e.message);
+    return localRoom();
+  }
+}
+const parse = (v, fb) => { if (typeof v !== "string") return fb; try { return JSON.parse(v); } catch { return fb; } };
+const memo = new Map();
+/** A shared JSON field, parsed once per change (read-only: never mutate what this returns). */
+function shared(key, fallback) {
+  const raw = S.shared[key], m = memo.get(key);
+  if (m && m.raw === raw) return m.v;
+  const v = parse(raw, fallback); memo.set(key, { raw, v }); return v;
+}
+let net = null, S = { entities: { players: {} }, shared: {} };
+const seenHb = new Map(); // sessionId -> { hb, at } on OUR clock
+/** Players whose heartbeat moved in the last 3s (plus us), sorted by sessionId. */
+function livePlayers() {
+  const now = performance.now(), out = [];
+  for (const [id, p] of Object.entries(S.entities.players || {})) {
+    const s = seenHb.get(id);
+    if (!s || s.hb !== p.hb) seenHb.set(id, { hb: p.hb, at: now });
+    if (id === net.sessionId || now - seenHb.get(id).at < 3000) out.push(id);
+  }
+  return out.sort();
+}
+const isHost = () => livePlayers()[0] === net.sessionId;
+const liveConfig = () => (net && net.live && net.live.config) || {};
+
+// ── FIELD ───────────────────────────────────────────────────────────────────────────
+function mulberry32(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const around = (g, i) => { const x = i % g.cols, y = (i - x) / g.cols, out = [];
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const nx = x + dx, ny = y + dy; if ((dx || dy) && nx >= 0 && ny >= 0 && nx < g.cols && ny < g.rows) out.push(ny * g.cols + nx); }
+  return out; };
+const isFlag = (ch) => ch >= "A" && ch <= "H";
+const mineCache = { key: "", mines: null, counts: null };
+/** Where the mines are: from the round's seed and the first square dug (it and its neighbours are always clear). */
+function mineMap(g) {
+  const key = `${g.id}:${g.seed}:${g.safe}:${g.cols}:${g.rows}:${g.mines}`;
+  if (mineCache.key === key) return mineCache;
+  const n = g.cols * g.rows, mines = new Uint8Array(n), counts = new Uint8Array(n);
+  if (g.safe >= 0) {
+    const keep = new Set([g.safe, ...around(g, g.safe)]), pool = [];
+    for (let i = 0; i < n; i++) if (!keep.has(i)) pool.push(i);
+    const rnd = mulberry32(g.seed ^ Math.imul(g.safe + 1, 2654435761)), k = Math.min(g.mines, pool.length);
+    for (let j = 0; j < k; j++) { const r = j + Math.floor(rnd() * (pool.length - j)); [pool[j], pool[r]] = [pool[r], pool[j]]; mines[pool[j]] = 1; }
+    for (let i = 0; i < n; i++) if (mines[i]) for (const a of around(g, i)) counts[a]++;
+  }
+  Object.assign(mineCache, { key, mines, counts });
+  return mineCache;
+}
+/** The squares a dig at i opens: i itself, and if it touches no mine, everything around it, spreading (flags stop it). */
+function floodFrom(g, cells, i) {
+  const { counts } = mineMap(g), out = [i], seen = new Set(out);
+  for (let h = 0; h < out.length; h++) {
+    if (counts[out[h]]) continue;
+    for (const j of around(g, out[h])) if (!seen.has(j) && cells[j] === ".") { seen.add(j); out.push(j); }
+  }
+  return out;
+}
+const cellOf = (g, m) => (m && Number.isInteger(m.x) && Number.isInteger(m.y) && m.x >= 0 && m.y >= 0 && m.x < g.cols && m.y < g.rows ? m.y * g.cols + m.x : -1);
+/** The field as everyone sees it: the host's live copy, or the last one it wrote (blank if that's an older round). */
+function fieldNow(g) {
+  if (isHost() && host.cells && host.round === g.id) return host.str;
+  const f = shared("field", null);
+  return f && f.id === g.id && typeof f.s === "string" && f.s.length === g.cols * g.rows ? f.s : ".".repeat(g.cols * g.rows);
+}
+
+// ── RULES (HOST) ────────────────────────────────────────────────────────────────────
+const host = { last: null, wasHost: false, cells: null, str: "", round: -1, dirty: false, lastWrite: 0, dig: null, bots: new Map(), lastBots: 0, botsJson: "", lastSync: 0 };
+/** The round as state has it, or the host's own newer write that hasn't come back yet. `v` only goes up. */
+function game() {
+  const g = shared("game", null);
+  return host.last && isHost() && (!g || host.last.v > g.v) ? host.last : g;
+}
+function writeGame(g) { g = { ...g, v: (game()?.v ?? 0) + 1 }; host.last = g; net.setShared("game", JSON.stringify(g)); return g; }
+function newRound(id) {
+  const lc = liveConfig(), cols = CONFIG.cols, rows = CONFIG.rows;
+  const mines = Math.max(5, Math.min(Math.floor(cols * rows * 0.3), Math.round(+lc.mines || CONFIG.mines)));
+  const lives = Math.max(1, Math.min(9, Math.round(+lc.lives || CONFIG.lives)));
+  const g = writeGame({ id, phase: "play", seed: Math.floor(Math.random() * 2 ** 31), safe: -1, startAt: 0, endsAt: 0, cols, rows, mines, lives, maxLives: lives, winMs: 0, boom: null });
+  host.cells = Array(cols * rows).fill("."); host.round = id; host.dig = null; changed(); flush(performance.now(), true);
+  return g;
+}
+function changed() { host.str = host.cells.join(""); host.dirty = true; }
+function flush(now, force) {
+  if (!host.dirty || (!force && now - host.lastWrite < 100)) return; // at most 10 writes a second
+  host.dirty = false; host.lastWrite = now;
+  net.setShared("field", JSON.stringify({ id: host.round, s: host.str, d: host.dig }));
+}
+/** Become host: take the round and the field exactly as state has them. */
+function adopt() {
+  host.wasHost = true;
+  const g = game(); if (!g) return;
+  const f = shared("field", null);
+  host.cells = (f && f.id === g.id && f.s && f.s.length === g.cols * g.rows ? f.s : ".".repeat(g.cols * g.rows)).split("");
+  host.round = g.id; host.dig = f && f.d; changed(); host.dirty = false;
+  host.bots.clear();
+  for (const b of shared("bots", [])) host.bots.set(b.i, makeBot(b.i, b.n, b.c, b.x, b.y));
+}
+const colorLetter = (from) => { const c = from === net.sessionId ? myColor : host.bots.get(from)?.color || S.entities.players[from]?.c; return FLAGS[Math.max(0, COLORS.indexOf(c))]; };
+const nameOf = (from) => (from === net.sessionId ? myName : host.bots.get(from)?.name || S.entities.players[from]?.n || "Someone");
+
+/** A "dig" intent: open a square (the first one of a field also fixes where the mines go). On a number: dig around it. */
+function applyDig(from, m) {
+  let g = game(); if (!g || g.phase !== "play" || host.round !== g.id) return;
+  const i = cellOf(g, m); if (i < 0) return;
+  if (g.safe < 0) g = writeGame({ ...g, safe: i, startAt: Date.now() });
+  const c = host.cells[i];
+  if (c === "o") return applyChord(from, g, i);
+  if (c !== ".") return; // flagged or already a boom
+  openSquare(from, g, i);
+  host.dig = [i % g.cols, Math.floor(i / g.cols)]; changed();
+  checkWin(game());
+}
+function openSquare(from, g, i) {
+  if (mineMap(g).mines[i]) return boom(from, g, i);
+  for (const j of floodFrom(g, host.cells, i)) host.cells[j] = "o";
+  return true;
+}
+/** Dig around a number whose mines are all flagged. A wrong flag means a boom. */
+function applyChord(from, g, i) {
+  const { counts } = mineMap(g), nb = around(g, i);
+  if (!counts[i] || nb.filter((j) => isFlag(host.cells[j]) || host.cells[j] === "x").length !== counts[i]) return;
+  for (const j of nb) if (host.cells[j] === "." && game().phase === "play") openSquare(from, game(), j);
+  host.dig = [i % g.cols, Math.floor(i / g.cols)]; changed();
+  checkWin(game());
+}
+/** A mine went off: the square shows it, the team loses a life, and with none left the field is lost. */
+function boom(from, g, i) {
+  host.cells[i] = "x"; changed();
+  const lives = g.lives - 1, b = { i, n: nameOf(from), at: Date.now() };
+  if (lives > 0) writeGame({ ...g, lives, boom: b });
+  else writeGame({ ...g, lives: 0, boom: b, phase: "lost", endsAt: Date.now() + CONFIG.lostFor });
+  return false;
+}
+/** A "flag" intent: plant a flag in the placer's color, or take any flag away. */
+function applyFlag(from, m) {
+  const g = game(); if (!g || g.phase !== "play" || host.round !== g.id) return;
+  const i = cellOf(g, m); if (i < 0) return;
+  const c = host.cells[i];
+  if (c === ".") host.cells[i] = colorLetter(from); else if (isFlag(c)) host.cells[i] = "."; else return;
+  changed();
+}
+function checkWin(g) {
+  if (g.phase !== "play" || g.safe < 0) return;
+  const { mines } = mineMap(g);
+  for (let i = 0; i < host.cells.length; i++) if (!mines[i] && host.cells[i] !== "o") return;
+  writeGame({ ...g, phase: "won", winMs: Date.now() - g.startAt, endsAt: Date.now() + CONFIG.wonFor });
+}
+function hostTick(dt, now) {
+  if (!host.wasHost) adopt();
+  let g = game();
+  if (!g) g = newRound(1);
+  if (host.round !== g.id) { host.cells = ".".repeat(g.cols * g.rows).split(""); host.round = g.id; changed(); }
+  if ((g.phase === "won" || g.phase === "lost") && Date.now() > g.endsAt) g = newRound(g.id + 1);
+  if (now - host.lastSync > 1000) { host.lastSync = now; syncBots(); }
+  for (const b of host.bots.values()) botTick(b, dt, now, g);
+  flush(now, false);
+  if (now - host.lastBots > 100) {
+    host.lastBots = now;
+    const json = JSON.stringify([...host.bots.values()].map((b) => ({ i: b.id, n: b.name, c: b.color, x: +b.x.toFixed(2), y: +b.y.toFixed(2) })));
+    if (json !== host.botsJson) { host.botsJson = json; net.setShared("bots", json); }
+  }
+}
+
+// ── BOTS ────────────────────────────────────────────────────────────────────────────
+// A bot reads the numbers like a person: a number whose hidden neighbours must all be mines
+// gets them flagged; a number with all its mines flagged gets the rest dug. With no sure move it
+// "guesses" a frontier square (it knows the field, so a guess is safe unless CONFIG.botMistake).
+const rnd = (a, b) => a + Math.random() * (b - a);
+function makeBot(id, name, color, x, y) { return { id, name, color, x, y, target: null, readyAt: performance.now() + rnd(...CONFIG.botThinkMs) }; }
+function syncBots() {
+  const humans = livePlayers().length - (ATTRACT ? 1 : 0), want = Math.max(0, CONFIG.seats - humans);
+  while (host.bots.size > want) host.bots.delete([...host.bots.keys()].pop());
+  while (host.bots.size < want) {
+    const used = new Set([...host.bots.values()].map((b) => b.name)), taken = new Set([...takenColors(), myColor, ...[...host.bots.values()].map((b) => b.color)]);
+    const g = game(), id = "~b" + Math.random().toString(36).slice(2, 6);
+    host.bots.set(id, makeBot(id, BOT_NAMES.find((n) => !used.has(n)) || "Bot", COLORS.find((c) => !taken.has(c)) || "#ccc", rnd(0, g ? g.cols : 10), rnd(0, g ? g.rows : 10)));
+  }
+}
+/** The bot's next move: { i, act: "dig" | "flag" }, nearest sure moves first. */
+function botPlan(b, g) {
+  const cells = host.cells, { counts, mines } = mineMap(g), claimed = new Set([...host.bots.values()].filter((o) => o !== b && o.target).map((o) => o.target.i));
+  if (g.safe < 0) return { i: Math.floor(g.rows / 2 + rnd(-3, 3)) * g.cols + Math.floor(g.cols / 2 + rnd(-6, 6)), act: "dig" };
+  const sure = [], frontier = [];
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] !== "o" || !counts[i]) continue;
+    const nb = around(g, i), hidden = nb.filter((j) => cells[j] === "." && !claimed.has(j)), known = nb.filter((j) => isFlag(cells[j]) || cells[j] === "x").length;
+    if (!hidden.length) continue;
+    if (counts[i] - known === nb.filter((j) => cells[j] === ".").length) for (const j of hidden) sure.push({ i: j, act: "flag" });
+    else if (counts[i] === known) for (const j of hidden) sure.push({ i: j, act: "dig" });
+    else frontier.push(...hidden);
+  }
+  const near = (list) => { const d = (i) => Math.hypot((i % g.cols) + 0.5 - b.x, Math.floor(i / g.cols) + 0.5 - b.y); return list.sort((a, c) => d(a.i ?? a) - d(c.i ?? c)).slice(0, 4)[Math.floor(Math.random() * Math.min(4, list.length))]; };
+  if (sure.length) return near(sure);
+  if (!frontier.length) { for (let i = 0; i < cells.length; i++) if (cells[i] === "." && !mines[i] && !claimed.has(i)) frontier.push(i); }
+  if (!frontier.length) return null;
+  const pick = Math.random() < CONFIG.botMistake ? frontier : frontier.filter((i) => !mines[i]);
+  const i = near(pick.length ? pick : frontier.filter((i) => mines[i]).map((i) => i));
+  if (i === undefined) return null;
+  return pick.length ? { i, act: "dig", guess: true } : { i, act: "flag" }; // only mines left on the frontier: flag one
+}
+/** Glide the cursor to the target (fast far away, gentle up close), then dig or flag it. */
+function botTick(b, dt, now, g) {
+  if (g.phase !== "play") { b.target = null; return; }
+  if (!b.target && now > b.readyAt) { b.target = botPlan(b, g); if (b.target && b.target.guess) b.readyAt = now + rnd(...CONFIG.botThinkMs); } // a guess: hesitate first
+  if (!b.target) return;
+  const tx = (b.target.i % g.cols) + 0.5, ty = Math.floor(b.target.i / g.cols) + 0.5, dx = tx - b.x, dy = ty - b.y, d = Math.hypot(dx, dy);
+  const step = Math.min(d, Math.max(3, d * 5) * dt);
+  if (d > 0.01) { b.x += (dx / d) * step; b.y += (dy / d) * step; }
+  if (d < 0.12 && now >= b.readyAt) {
+    const c = host.cells[b.target.i], m = { x: b.target.i % g.cols, y: Math.floor(b.target.i / g.cols) };
+    if (b.target.act === "flag" && c === ".") applyFlag(b.id, m);
+    else if (b.target.act === "dig" && c === ".") applyDig(b.id, m);
+    b.target = null; b.readyAt = now + rnd(...CONFIG.botThinkMs);
+  }
+}
+
+// ── ME ──────────────────────────────────────────────────────────────────────────────
+const myName = (() => { try { return localStorage.getItem("mpa-name") || ""; } catch { return ""; } })() ||
+  ["Brave", "Calm", "Lucky", "Careful", "Quick", "Bold"][Math.floor(Math.random() * 6)] + " " + ["Mole", "Badger", "Fox", "Otter", "Hare"][Math.floor(Math.random() * 5)];
+let myColor = COLORS[0]; // picked on join: the first color nobody in the room has
+const me = { hover: null, cur: "", lastCur: 0, mode: "dig", played: -1, submitted: -1 };
+const pending = new Map(); // square -> { ch, until }: my dig or flag, shown at once until the host's field agrees
+
+/** Dig or flag square (x, y): show it now, ask the host (or do it, if I am the host). */
+function act(kind, x, y) {
+  const g = game(); if (!g || g.phase !== "play" || ATTRACT) return;
+  const i = cellOf(g, { x, y }); if (i < 0) return;
+  const cells = viewCells(g), ch = cells[i], now = performance.now();
+  if (kind === "flag") {
+    if (ch !== "." && !isFlag(ch)) return;
+    pending.set(i, { ch: ch === "." ? FLAGS[Math.max(0, COLORS.indexOf(myColor))] : ".", until: now + 1500 }); sfx("flag");
+  } else {
+    if (isFlag(ch) || ch === "x") return;
+    if (ch === "." && g.safe >= 0 && !mineMap(g).mines[i]) { for (const j of floodFrom(g, cells, i)) pending.set(j, { ch: "o", until: now + 1500 }); } // a safe dig opens right away
+    if (ch === "." || ch === "o") { pending.dig = { x: x + 0.5, y: y + 0.5 }; sfx("dig"); }
+  }
+  const msg = { x, y };
+  if (isHost()) (kind === "flag" ? applyFlag : applyDig)(net.sessionId, msg); else net.send(kind, msg);
+}
+/** The field with my unconfirmed digs and flags on top. */
+function viewCells(g) {
+  const s = fieldNow(g); if (!pending.size) return s;
+  const now = performance.now(), arr = s.split("");
+  for (const [i, p] of pending) { if (arr[i] === p.ch || now > p.until) pending.delete(i); else if (arr[i] === "." || isFlag(arr[i])) arr[i] = p.ch; }
+  return arr.join("");
+}
+
+// ── DRAW ────────────────────────────────────────────────────────────────────────────
+const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+let W = 0, H = 0, DPR = 1;
+const cam = { x: 15, y: 8, z: 30, flip: false, user: false, shake: 0 };
+const TOP = () => (ATTRACT ? 0 : 56), BOTTOM = () => (ATTRACT ? 0 : touchUI ? 40 : 30);
+function fit() { DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight; cv.width = W * DPR; cv.height = H * DPR; cam.user = false; }
+addEventListener("resize", fit); addEventListener("orientationchange", fit); fit();
+/** The camera works in "view" space: the field turned sideways (x and y swapped) on a tall screen. */
+function frameField(g) {
+  cam.flip = !ATTRACT && H > W && g.cols > g.rows;
+  const vw = cam.flip ? g.rows : g.cols, vh = cam.flip ? g.cols : g.rows;
+  cam.fit = Math.min((W - 16) / vw, (H - TOP() - BOTTOM() - 8) / vh);
+  if (ATTRACT) { // the preview: closer in, drifting after the bots' cursors
+    const bots = [...host.bots.values()], fx = bots.length ? bots.reduce((s, b) => s + b.x, 0) / bots.length : vw / 2, fy = bots.length ? bots.reduce((s, b) => s + b.y, 0) / bots.length : vh / 2;
+    cam.z = Math.max(W / vw, H / vh) * 1.6;
+    const hw = W / 2 / cam.z, hh = H / 2 / cam.z;
+    cam.x += (Math.max(hw, Math.min(vw - hw, fx)) - cam.x) * 0.02; cam.y += (Math.max(hh, Math.min(vh - hh, fy)) - cam.y) * 0.02;
+    return;
+  }
+  if (!cam.user) { cam.z = cam.fit; cam.x = vw / 2; cam.y = vh / 2; }
+  cam.x = Math.max(0, Math.min(vw, cam.x)); cam.y = Math.max(0, Math.min(vh, cam.y));
+}
+const midY = () => (H + TOP() - BOTTOM()) / 2;
+/** Field square coordinates → screen pixels (the top-left corner of square x, y is toScreen(x, y)). */
+function toScreen(x, y) { const vx = cam.flip ? y : x, vy = cam.flip ? x : y; return [(vx - cam.x) * cam.z + W / 2, (vy - cam.y) * cam.z + midY()]; }
+function toField(sx, sy) { const vx = (sx - W / 2) / cam.z + cam.x, vy = (sy - midY()) / cam.z + cam.y; return cam.flip ? [vy, vx] : [vx, vy]; }
+function zoomAt(f, sx, sy) {
+  const [fx, fy] = toField(sx, sy);
+  cam.z = Math.max(cam.fit * 0.9, Math.min(90, cam.z * f)); cam.user = true;
+  const vx = cam.flip ? fy : fx, vy = cam.flip ? fx : fy;
+  cam.x = vx - (sx - W / 2) / cam.z; cam.y = vy - (sy - midY()) / cam.z;
+}
+const revealAt = new Map(), flagAt = new Map(), sparks = [];
+let lastCells = "", lastRound = -1, lastLives = -1, lastPhase = "";
+/** Compare the field with last frame: reveals ripple out from the dig, flags drop in, booms explode. */
+function effects(g, cells, now) {
+  if (g.id !== lastRound) { lastRound = g.id; lastCells = cells; lastLives = g.lives; revealAt.clear(); flagAt.clear(); return; }
+  if (cells === lastCells) return;
+  const f = shared("field", {}), d = (isHost() ? host.dig : f.d) || [g.cols / 2, g.rows / 2], origin = pending.dig || { x: d[0] + 0.5, y: d[1] + 0.5 };
+  let opened = 0;
+  for (let i = 0; i < cells.length; i++) {
+    const a = lastCells[i], c = cells[i]; if (a === c) continue;
+    const x = (i % g.cols) + 0.5, y = Math.floor(i / g.cols) + 0.5;
+    if (c === "o") { opened++; revealAt.set(i, now + Math.min(600, Math.hypot(x - origin.x, y - origin.y) * 28)); }
+    else if (isFlag(c)) flagAt.set(i, now);
+    else if (c === "x") explode(x, y, now);
+  }
+  if (opened) sfx(opened > 6 ? "flood" : "pop");
+  pending.dig = null; lastCells = cells;
+}
+function explode(x, y, now) {
+  cam.shake = 1;
+  for (let k = 0; k < 40; k++) { const a = Math.random() * 7, s = rnd(2, 9); sparks.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: rnd(0.5, 1.1), color: ["#ffd23f", "#ff7b2e", "#ff3b30", "#555"][k % 4], s: rnd(0.12, 0.3) }); }
+  sfx("boom");
+}
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function drawBomb(cx, cy, z) {
+  ctx.fillStyle = "#1d1d24"; ctx.beginPath(); ctx.arc(cx, cy, z * 0.26, 0, 7); ctx.fill();
+  ctx.strokeStyle = "#1d1d24"; ctx.lineWidth = z * 0.08; ctx.beginPath();
+  for (let k = 0; k < 4; k++) { const a = k * Math.PI / 4; ctx.moveTo(cx - Math.cos(a) * z * 0.36, cy - Math.sin(a) * z * 0.36); ctx.lineTo(cx + Math.cos(a) * z * 0.36, cy + Math.sin(a) * z * 0.36); }
+  ctx.stroke(); ctx.fillStyle = "#ffffffcc"; ctx.beginPath(); ctx.arc(cx - z * 0.09, cy - z * 0.09, z * 0.06, 0, 7); ctx.fill();
+}
+function drawFlag(cx, cy, z, color, drop) {
+  const up = (1 - drop) * z * 0.5;
+  ctx.strokeStyle = "#3a2a1a"; ctx.lineWidth = Math.max(1.5, z * 0.07); ctx.beginPath(); ctx.moveTo(cx - z * 0.12, cy + z * 0.3 - up); ctx.lineTo(cx - z * 0.12, cy - z * 0.3 - up); ctx.stroke();
+  ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(cx - z * 0.1, cy - z * 0.3 - up); ctx.lineTo(cx + z * 0.28, cy - z * 0.15 - up); ctx.lineTo(cx - z * 0.1, cy - up); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#0003"; ctx.beginPath(); ctx.ellipse(cx - z * 0.12, cy + z * 0.32, z * 0.16, z * 0.05, 0, 0, 7); ctx.fill();
+}
+function draw(g, cells, dt, now) {
+  frameField(g);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = "#163036"; ctx.fillRect(0, 0, W, H);
+  cam.shake = Math.max(0, cam.shake - dt * 2.5);
+  const shx = cam.shake ? (Math.random() - 0.5) * 14 * cam.shake : 0, shy = cam.shake ? (Math.random() - 0.5) * 14 * cam.shake : 0;
+  ctx.translate(shx, shy);
+  const z = cam.z, { counts, mines } = mineMap(g), lost = g.phase === "lost", t = now / 1000;
+  const [ax, ay] = toScreen(0, 0), [bx, by] = toScreen(g.cols, g.rows);
+  ctx.fillStyle = "#0006"; rr(Math.min(ax, bx) + 4, Math.min(ay, by) + 8, Math.abs(bx - ax), Math.abs(by - ay), 10); ctx.fill(); // the field's shadow
+  ctx.font = `900 ${Math.round(z * 0.62)}px system-ui, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const hover = me.hover && !ATTRACT ? Math.floor(me.hover[1]) * g.cols + Math.floor(me.hover[0]) : -1;
+  for (let y = 0; y < g.rows; y++) for (let x = 0; x < g.cols; x++) {
+    const i = y * g.cols + x, c = cells[i];
+    let [sx, sy] = toScreen(x, y); if (sx > W || sy > H || sx < -z || sy < -z) continue;
+    const odd = (x + y) % 2, cx = sx + z / 2, cy = sy + z / 2;
+    if (c === "o" || c === "x") {
+      ctx.fillStyle = c === "x" ? "#ff5a4e" : odd ? "#e6cfa3" : "#eed9b0"; ctx.fillRect(sx, sy, z + 0.6, z + 0.6);
+      if (c === "x") drawBomb(cx, cy, z);
+      else if (counts[i]) { ctx.fillStyle = NUM_COLORS[counts[i]]; ctx.fillText(counts[i], cx, cy + z * 0.04); }
+      const ra = revealAt.get(i); // the grass lifts off and shrinks away
+      if (ra !== undefined) {
+        const k = (now - ra) / 220;
+        if (k < 1) { const s = k < 0 ? 1 : 1 - k * k; ctx.globalAlpha = k < 0 ? 1 : 1 - k; ctx.fillStyle = odd ? "#86c75f" : "#8fd16a"; ctx.fillRect(cx - (z * s) / 2, cy - (z * s) / 2 - (k > 0 ? k * z * 0.3 : 0), z * s, z * s); ctx.globalAlpha = 1; }
+        else revealAt.delete(i);
+      }
+    } else {
+      ctx.fillStyle = i === hover && g.phase === "play" ? "#b4ec8c" : odd ? "#86c75f" : "#8fd16a"; ctx.fillRect(sx, sy, z + 0.6, z + 0.6);
+      ctx.fillStyle = "#0000001a"; ctx.fillRect(sx, sy + z * 0.86, z + 0.6, z * 0.14); // a little depth on each tuft
+      if (lost && mines[i] && !isFlag(c)) drawBomb(cx, cy, z * 0.9);
+      if (isFlag(c)) {
+        const fa = flagAt.get(i), drop = fa === undefined ? 1 : Math.min(1, (now - fa) / 160);
+        drawFlag(cx, cy, z, COLORS[FLAGS.indexOf(c)] || "#e8453c", 1 - (1 - drop) ** 2);
+        if (lost && !mines[i]) { ctx.strokeStyle = "#111"; ctx.lineWidth = z * 0.1; ctx.beginPath(); ctx.moveTo(sx + z * 0.2, sy + z * 0.2); ctx.lineTo(sx + z * 0.8, sy + z * 0.8); ctx.moveTo(sx + z * 0.8, sy + z * 0.2); ctx.lineTo(sx + z * 0.2, sy + z * 0.8); ctx.stroke(); }
+      }
+    }
+  }
+  if (z >= 14) { // fine lines between open squares and the grass
+    ctx.strokeStyle = "#5d8f3f"; ctx.lineWidth = Math.max(1, z * 0.05); ctx.beginPath();
+    for (let y = 0; y < g.rows; y++) for (let x = 0; x < g.cols; x++) {
+      const i = y * g.cols + x, open = cells[i] === "o" || cells[i] === "x"; if (!open) continue;
+      for (const [nx, ny, ax0, ay0, ax1, ay1] of [[x - 1, y, x, y, x, y + 1], [x + 1, y, x + 1, y, x + 1, y + 1], [x, y - 1, x, y, x + 1, y], [x, y + 1, x, y + 1, x + 1, y + 1]]) {
+        if (nx < 0 || ny < 0 || nx >= g.cols || ny >= g.rows) continue;
+        const nc = cells[ny * g.cols + nx]; if (nc === "o" || nc === "x") continue;
+        const [p, q] = toScreen(ax0, ay0), [r, s] = toScreen(ax1, ay1); ctx.moveTo(p, q); ctx.lineTo(r, s);
+      }
+    }
+    ctx.stroke();
+  }
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i]; s.life -= dt; s.vx *= 0.96; s.vy = s.vy * 0.96 + (s.fall ? 9 * dt : 0); s.x += s.vx * dt; s.y += s.vy * dt;
+    if (s.life <= 0) { sparks.splice(i, 1); continue; }
+    const [px, py] = toScreen(s.x, s.y); ctx.globalAlpha = Math.min(1, s.life * 2); ctx.fillStyle = s.color; ctx.fillRect(px - (s.s * z) / 2, py - (s.s * z) / 2, s.s * z, s.s * z); ctx.globalAlpha = 1;
+  }
+  drawCursors(g, now);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+// Everyone else's cursors (players and bots), eased toward where they last were.
+const cursors = new Map(); // id -> { x, y, seen }
+function drawCursors(g, now) {
+  const list = [];
+  for (const id of livePlayers()) { if (id === net.sessionId) continue; const p = S.entities.players[id], c = parse(p.cur, null); if (c && c.r === g.id) list.push({ id, x: c.x, y: c.y, name: p.n || "Player", color: p.c || "#fff" }); }
+  const bots = isHost() ? [...host.bots.values()].map((b) => ({ i: b.id, n: b.name, c: b.color, x: b.x, y: b.y })) : shared("bots", []);
+  for (const b of bots) list.push({ id: b.i, x: b.x, y: b.y, name: b.n, color: b.c, bot: true });
+  for (const c of list) {
+    let v = cursors.get(c.id);
+    if (!v) { v = { x: c.x, y: c.y }; cursors.set(c.id, v); }
+    const k = c.bot && isHost() ? 1 : 0.25; v.x += (c.x - v.x) * k; v.y += (c.y - v.y) * k; v.seen = now;
+    const [sx, sy] = toScreen(v.x, v.y);
+    ctx.save(); ctx.translate(sx, sy);
+    ctx.fillStyle = c.color; ctx.strokeStyle = "#000c"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 17); ctx.lineTo(4.5, 13); ctx.lineTo(8, 20); ctx.lineTo(10.5, 19); ctx.lineTo(7, 12); ctx.lineTo(12.5, 12); ctx.closePath(); ctx.fill(); ctx.stroke();
+    if (!ATTRACT || c.bot) { ctx.font = "700 12px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic"; const w = ctx.measureText(c.name).width + 10;
+      ctx.fillStyle = c.color; rr(12, 18, w, 18, 5); ctx.fill(); ctx.fillStyle = "#fff"; ctx.fillText(c.name, 17, 31); }
+    ctx.restore();
+  }
+  for (const [id, v] of cursors) if (v.seen !== now) cursors.delete(id);
+}
+
+// ── HUD & CARD ──────────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const fmt = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, "0")}`;
+let board = null, toastTimer = 0, cardAt = 0;
+function toast(text, ms = 1800) { const t = $("toast"); t.textContent = text; t.classList.add("on"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("on"), ms); }
+function hud(g, cells) {
+  if (ATTRACT) return;
+  const flags = [...cells].filter((c) => isFlag(c) || c === "x").length;
+  $("left").textContent = `💣 ${g.mines - flags}`;
+  $("lives").textContent = "❤️".repeat(g.lives) + "🖤".repeat(Math.max(0, g.maxLives - g.lives));
+  $("clock").textContent = fmt(g.phase === "won" ? g.winMs : g.startAt ? Date.now() - g.startAt : 0);
+  const n = livePlayers().length;
+  $("net").textContent = net.offline ? "Offline: playing with bots" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the field" : ""}`;
+  if (cardAt && performance.now() > cardAt) { cardAt = 0; $("over").hidden = false; }
+  $("hint").style.opacity = g.safe < 0 || Date.now() - g.startAt < 9000 ? 1 : 0;
+  $("hint").textContent = touchUI ? "Tap to dig · long-press to flag · tap a number to dig around it" : "Click to dig · right-click to flag · click a number to dig around it";
+}
+/** Once per change of phase: the cleared / lost card, and the leaderboard on a clear. */
+function onPhase(g, cells) {
+  const key = g.id + g.phase; if (key === lastPhase) return; lastPhase = key;
+  if (g.phase === "play") { $("over").hidden = true; cardAt = 0; me.played = g.id; return; } // anyone here while the field is played counts for the board
+  if (g.phase === "won") { for (let k = 0; k < 90; k++) sparks.push({ x: g.cols / 2, y: g.rows / 2, vx: rnd(-14, 14), vy: rnd(-12, 6), life: rnd(1, 2), color: COLORS[k % COLORS.length], s: 0.3, fall: true }); sfx("win"); }
+  if (ATTRACT) return;
+  cardAt = performance.now() + (g.phase === "lost" ? 1800 : 900); // let the last boom (or the confetti) show first
+  const open = [...cells].filter((c) => c === "o").length, total = g.cols * g.rows - g.mines;
+  $("overTitle").textContent = g.phase === "won" ? "Field cleared!" : "Out of lives";
+  $("overText").textContent = g.phase === "won" ? `Cleared in ${fmt(g.winMs)} with ${g.lives} ${g.lives === 1 ? "life" : "lives"} to spare` : `${Math.floor((100 * open) / total)}% of the field cleared. A new one is coming.`;
+  $("boardBox").hidden = g.phase !== "won";
+  if (g.phase !== "won") return;
+  const list = $("board");
+  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
+  const submit = me.played === g.id && me.submitted !== g.id ? board.submit(Math.max(0, 3600000 - g.winMs)).catch(() => null) : Promise.resolve();
+  me.submitted = g.id; list.innerHTML = "<li>Loading…</li>";
+  submit.then(() => board.top(10)).then(({ entries }) => {
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${fmt(3600000 - e.score)}</span></li>`).join("") : "<li>No clears yet. Be the first.</li>";
+  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+}
+function onLives(g) { // a boom: say who, and how many lives are left
+  if (g.lives === lastLives) return;
+  if (lastLives >= 0 && g.lives < lastLives && g.boom && !ATTRACT) toast(g.lives ? `Boom! ${g.boom.n} hit a mine · ${g.lives} ${g.lives === 1 ? "life" : "lives"} left` : `Boom! Out of lives`, 2200);
+  lastLives = g.lives;
+}
+$("again").onclick = () => { const g = game(); if (!g || g.phase === "play") return; if (isHost()) newRound(g.id + 1); else net.send("again", {}); };
+let audio = null;
+function sfx(kind) {
+  if (!audio) return;
+  try {
+    const t = audio.currentTime, tone = (f, d, type = "triangle", v = 0.07, f2 = f, at = 0) => { const o = audio.createOscillator(), gn = audio.createGain(); o.type = type; o.frequency.setValueAtTime(f, t + at); o.frequency.exponentialRampToValueAtTime(f2, t + at + d); gn.gain.setValueAtTime(v, t + at); gn.gain.exponentialRampToValueAtTime(0.0001, t + at + d); o.connect(gn).connect(audio.destination); o.start(t + at); o.stop(t + at + d + 0.02); };
+    if (kind === "dig") tone(300, 0.06, "square", 0.03, 200);
+    if (kind === "pop") tone(520, 0.08, "triangle", 0.06, 700);
+    if (kind === "flood") [520, 660, 880].forEach((f, k) => tone(f, 0.1, "triangle", 0.05, f * 1.2, k * 0.05));
+    if (kind === "flag") tone(880, 0.07, "triangle", 0.05, 1200);
+    if (kind === "win") [523, 659, 784, 1046].forEach((f, k) => tone(f, 0.18, "triangle", 0.07, f, k * 0.1));
+    if (kind === "boom") { const len = audio.sampleRate * 0.5, buf = audio.createBuffer(1, len, audio.sampleRate), d = buf.getChannelData(0); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len) ** 2; const s = audio.createBufferSource(), gn = audio.createGain(); s.buffer = buf; gn.gain.value = 0.25; s.connect(gn).connect(audio.destination); s.start(); tone(120, 0.4, "sine", 0.2, 40); }
+  } catch {}
+}
+const takenColors = () => new Set([...livePlayers().filter((id) => id !== net.sessionId).map((id) => S.entities.players[id]?.c), ...shared("bots", []).map((b) => b.c)]);
+/** Two players picked the same color at once (the joiner's first state can be empty): the later sessionId picks again. Bots' colors count too. */
+function fixColor() {
+  const others = livePlayers().filter((id) => id !== net.sessionId), botColors = isHost() ? [...host.bots.values()].map((b) => b.color) : shared("bots", []).map((b) => b.c);
+  if (!others.some((id) => S.entities.players[id]?.c === myColor && id < net.sessionId) && !botColors.includes(myColor)) return;
+  const taken = new Set([...others.map((id) => S.entities.players[id]?.c), ...botColors]), free = COLORS.find((c) => !taken.has(c));
+  if (free) { myColor = free; net.me.set("c", free); }
+}
+
+// ── INPUT ───────────────────────────────────────────────────────────────────────────
+const touchUI = matchMedia("(pointer: coarse)").matches && !ATTRACT;
+$("mode").hidden = !touchUI;
+$("side").hidden = ATTRACT || touchUI; // on touch, pinch to zoom and drag to pan
+const wake = () => { if (!audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch {} } };
+function setMode(m) { me.mode = m; $("mode").classList.toggle("flag", m === "flag"); $("mode").innerHTML = m === "flag" ? "🚩<br>Flag" : "⛏<br>Dig"; }
+$("mode").addEventListener("pointerdown", (e) => { e.preventDefault(); wake(); setMode(me.mode === "dig" ? "flag" : "dig"); });
+const pointers = new Map(); // pointerId -> { x, y, moved, button, long }
+let pinch = null;
+const squareAt = (sx, sy) => toField(sx, sy).map(Math.floor);
+cv.addEventListener("pointerdown", (e) => {
+  e.preventDefault(); wake(); try { cv.setPointerCapture(e.pointerId); } catch {}
+  const p = { x: e.clientX, y: e.clientY, moved: 0, button: e.button, long: null };
+  pointers.set(e.pointerId, p);
+  me.hover = toField(e.clientX, e.clientY);
+  if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), z: cam.z }; for (const q of pointers.values()) clearTimeout(q.long); }
+  else if (e.pointerType !== "mouse") p.long = setTimeout(() => { if (p.moved < 10 && !pinch) { p.done = true; const [x, y] = squareAt(p.x, p.y); act(me.mode === "flag" ? "dig" : "flag", x, y); navigator.vibrate && navigator.vibrate(20); } }, CONFIG.longPressMs);
+});
+cv.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "mouse") me.hover = toField(e.clientX, e.clientY);
+  const p = pointers.get(e.pointerId); if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY; p.moved += Math.abs(dx) + Math.abs(dy);
+  if (pointers.size === 2 && pinch) { // pinch: zoom around the middle, and pan with it
+    const [a, b] = [...pointers.values()];
+    zoomAt((pinch.z * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d) / cam.z, (a.x + b.x) / 2, (a.y + b.y) / 2);
+    cam.x -= dx / 2 / cam.z; cam.y -= dy / 2 / cam.z;
+  } else if (p.moved > 10) { cam.x -= dx / cam.z; cam.y -= dy / cam.z; cam.user = true; clearTimeout(p.long); }
+});
+function release(e, tap) {
+  const p = pointers.get(e.pointerId); if (!p) return;
+  pointers.delete(e.pointerId); clearTimeout(p.long);
+  if (tap && !pinch && !p.done && p.moved <= 10) {
+    const [x, y] = squareAt(e.clientX, e.clientY);
+    if (e.pointerType !== "mouse") me.hover = [x + 0.5, y + 0.5];
+    act(p.button === 2 || (e.pointerType !== "mouse" && me.mode === "flag") ? "flag" : "dig", x, y);
+  }
+  if (pointers.size === 0) pinch = null;
+}
+cv.addEventListener("pointerup", (e) => release(e, true));
+cv.addEventListener("pointercancel", (e) => release(e, false));
+cv.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") me.hover = null; });
+cv.addEventListener("contextmenu", (e) => e.preventDefault());
+cv.addEventListener("wheel", (e) => { e.preventDefault(); zoomAt(Math.pow(1.0015, -e.deltaY), e.clientX, e.clientY); }, { passive: false });
+$("zin").onclick = () => zoomAt(1.35, W / 2, midY());
+$("zout").onclick = () => zoomAt(1 / 1.35, W / 2, midY());
+$("zfit").onclick = () => { cam.user = false; };
+addEventListener("keydown", (e) => {
+  wake();
+  if (e.key === "+" || e.key === "=") zoomAt(1.25, W / 2, midY());
+  if (e.key === "-") zoomAt(0.8, W / 2, midY());
+  if ((e.key === "f" || e.key === " ") && me.hover) { e.preventDefault(); act("flag", Math.floor(me.hover[0]), Math.floor(me.hover[1])); }
+});
+document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+// ── MAIN LOOP ───────────────────────────────────────────────────────────────────────
+let last = performance.now(), lastHb = 0, lastHud = 0;
+function frame(now) {
+  const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now; // the first frame can be timed before load: never negative
+  if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); fixColor(); }
+  if (isHost()) hostTick(dt, now); else host.wasHost = false;
+  const g = game();
+  if (g) {
+    const cells = viewCells(g);
+    effects(g, cells, now); onLives(g); onPhase(g, cells);
+    if (me.hover && now - me.lastCur > 100) { // my cursor, ~10 times a second when it moves
+      const cur = JSON.stringify({ x: +me.hover[0].toFixed(2), y: +me.hover[1].toFixed(2), r: g.id });
+      if (cur !== me.cur) { me.cur = cur; me.lastCur = now; net.me.set("cur", cur); }
+    }
+    draw(g, cells, dt, now);
+    if (now - lastHud > 150) { lastHud = now; hud(g, cells); }
+  }
+  requestAnimationFrame(frame);
+}
+
+(async function start() {
+  net = await connect();
+  net.onState((st) => { S = st; });
+  net.on("dig", (msg, from) => { if (isHost()) applyDig(from, msg); });
+  net.on("flag", (msg, from) => { if (isHost()) applyFlag(from, msg); });
+  net.on("again", () => { const g = game(); if (isHost() && g && g.phase !== "play") newRound(g.id + 1); });
+  net.onDisconnect(() => { $("net").textContent = "Reconnecting…"; });
+  if (!net.offline && typeof MP !== "undefined") board = MP.auth({ key: MP_CONNECT.key, apiUrl: MP_CONNECT.apiUrl }).leaderboard(CONFIG.board);
+  const taken = takenColors();
+  myColor = COLORS.find((c) => !taken.has(c)) || COLORS[Math.floor(Math.random() * COLORS.length)];
+  net.me.set({ n: myName, c: myColor, hb: Date.now() });
+  if (ATTRACT) { for (const id of ["stats", "net", "hint"]) $(id).style.display = "none"; Object.assign(CONFIG, { seats: 5, botThinkMs: [120, 320], botMistake: 0.08, lives: 99, wonFor: 3000, lostFor: 3000 }); }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
