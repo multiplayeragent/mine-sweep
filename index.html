@@ -20,14 +20,14 @@
   #net { bottom: max(8px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); font-size: 12px; opacity: .8; white-space: nowrap; }
   #hint { top: calc(max(10px, env(safe-area-inset-top)) + 52px); left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px); box-sizing: border-box; padding: 6px 14px; border-radius: 12px; background: #0d2226e6;
           text-align: center; font-size: 14px; font-weight: 700; color: #ffe08a; text-shadow: none; transition: opacity .8s; }
-  @media (min-width: 900px) { #hint { top: max(14px, env(safe-area-inset-top)); white-space: nowrap; } }
+  @media (min-width: 1000px) { #hint { top: max(14px, env(safe-area-inset-top)); white-space: nowrap; } }
   #toast { top: 40%; left: 16px; right: 16px; text-align: center; font-size: 26px; font-weight: 900; color: #fff; opacity: 0; transition: opacity .3s, transform .3s; transform: scale(.85); }
   #toast.on { opacity: 1; transform: scale(1); }
   #over { position: fixed; inset: 0; display: grid; place-items: center; background: #0a1a1db0; }
   .card { width: min(380px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; padding: 22px; border-radius: 16px; background: #1d3a40; border: 1px solid #ffffff22; text-align: center; box-sizing: border-box; }
   .card h2 { margin: 0 0 4px; font-size: 26px; color: #ffe08a; }
   .card h3 { margin: 14px 0 4px; font-size: 14px; color: #9be07a; text-align: left; }
-  .card ol { text-align: left; margin: 0; padding-left: 24px; font-size: 14px; } .card li span { float: right; font-variant-numeric: tabular-nums; }
+  .card ol { text-align: left; margin: 0; padding-left: 24px; font-size: 14px; } .card li span { float: right; font-variant-numeric: tabular-nums; } .card li.note { list-style: none; margin-left: -24px; opacity: .8; }
   button.go { width: 100%; min-height: 48px; margin-top: 14px; border: 0; border-radius: 12px; background: #7bd35a; color: #0b2306; font: 800 17px system-ui, sans-serif; cursor: pointer; }
 </style>
 <script src="https://cdn.multiplayeragent.com/sdk/mp.global.js"></script>
@@ -43,7 +43,7 @@
 <div id="over" hidden><div class="card">
   <h2 id="overTitle">Field cleared!</h2>
   <div id="overText"></div>
-  <div id="boardBox"><h3>Fastest clears</h3><ol id="board"><li>Loading…</li></ol></div>
+  <div id="boardBox"><h3>Fastest clears</h3><ol id="board"><li class="note">Loading…</li></ol></div>
   <button class="go" id="again">New field</button>
 </div></div>
 <script>
@@ -86,7 +86,7 @@ const CONFIG = {
   lives: 3,             // booms the team can take (live config: lives)
   seats: 3,             // bots fill the room up to this many sweepers
   botThinkMs: [900, 1800], // a bot's pause between moves (min, max)
-  botMistake: 0,        // chance a bot with no sure move guesses blind (and may hit a mine)
+  botMistake: 0,        // chance a bot with no sure move guesses carelessly instead of picking the safest-looking square
   wonFor: 25000,        // ms the "cleared" card shows before a new field
   lostFor: 12000,       // ms the "out of lives" card shows before a new field
   longPressMs: 380,     // touch: hold this long to flag
@@ -294,9 +294,10 @@ function hostTick(dt, now) {
 }
 
 // ── BOTS ────────────────────────────────────────────────────────────────────────────
-// A bot reads the numbers like a person: a number whose hidden neighbours must all be mines
-// gets them flagged; a number with all its mines flagged gets the rest dug. With no sure move it
-// "guesses" a frontier square (it knows the field, so a guess is safe unless CONFIG.botMistake).
+// A bot reads the numbers like a person and sees only what you see: a number whose hidden
+// neighbours must all be mines gets them flagged; a number with all its mines flagged gets the
+// rest dug; two numbers that share squares are compared ("this 1's squares are inside that 2's").
+// With no sure move it hesitates, then digs the square least likely to be a mine, and can be wrong.
 const rnd = (a, b) => a + Math.random() * (b - a);
 function makeBot(id, name, color, x, y) { return { id, name, color, x, y, target: null, readyAt: performance.now() + rnd(...CONFIG.botThinkMs) }; }
 function syncBots() {
@@ -310,31 +311,44 @@ function syncBots() {
 }
 /** The bot's next move: { i, act: "dig" | "flag" }, nearest sure moves first. */
 function botPlan(b, g) {
-  const cells = host.cells, { counts, mines } = mineMap(g), claimed = new Set([...host.bots.values()].filter((o) => o !== b && o.target).map((o) => o.target.i));
-  if (g.safe < 0) return { i: Math.floor(g.rows / 2 + rnd(-3, 3)) * g.cols + Math.floor(g.cols / 2 + rnd(-6, 6)), act: "dig" };
-  const sure = [], frontier = [];
+  const cells = host.cells, { counts } = mineMap(g), claimed = new Set([...host.bots.values()].filter((o) => o !== b && o.target).map((o) => o.target.i));
+  if (g.safe < 0) return { i: Math.floor(g.rows / 2 + rnd(-3, 3)) * g.cols + Math.floor(g.cols / 2 + rnd(-6, 6)), act: "dig", first: true };
+  const sure = [], rules = []; // rules: { s: hidden squares around a number, n: mines still among them }
   for (let i = 0; i < cells.length; i++) {
     if (cells[i] !== "o" || !counts[i]) continue;
-    const nb = around(g, i), hidden = nb.filter((j) => cells[j] === "." && !claimed.has(j)), known = nb.filter((j) => isFlag(cells[j]) || cells[j] === "x").length;
-    if (!hidden.length) continue;
-    if (counts[i] - known === nb.filter((j) => cells[j] === ".").length) for (const j of hidden) sure.push({ i: j, act: "flag" });
-    else if (counts[i] === known) for (const j of hidden) sure.push({ i: j, act: "dig" });
-    else frontier.push(...hidden);
+    const nb = around(g, i), hidden = nb.filter((j) => cells[j] === "."), n = counts[i] - nb.filter((j) => isFlag(cells[j]) || cells[j] === "x").length;
+    if (!hidden.length || n < 0) continue; // n < 0: someone flagged a wrong square here
+    rules.push({ s: hidden, n });
+    if (n === hidden.length) for (const j of hidden) sure.push({ i: j, act: "flag" });
+    else if (n === 0) for (const j of hidden) sure.push({ i: j, act: "dig" });
   }
-  const near = (list) => { const d = (i) => Math.hypot((i % g.cols) + 0.5 - b.x, Math.floor(i / g.cols) + 0.5 - b.y); return list.sort((a, c) => d(a.i ?? a) - d(c.i ?? c)).slice(0, 4)[Math.floor(Math.random() * Math.min(4, list.length))]; };
-  if (sure.length) return near(sure);
-  if (!frontier.length) { for (let i = 0; i < cells.length; i++) if (cells[i] === "." && !mines[i] && !claimed.has(i)) frontier.push(i); }
-  if (!frontier.length) return null;
-  const pick = Math.random() < CONFIG.botMistake ? frontier : frontier.filter((i) => !mines[i]);
-  const i = near(pick.length ? pick : frontier.filter((i) => mines[i]).map((i) => i));
-  if (i === undefined) return null;
-  return pick.length ? { i, act: "dig", guess: true } : { i, act: "flag" }; // only mines left on the frontier: flag one
+  if (!sure.length) for (const A of rules) for (const B of rules) { // A's squares all inside B's: B's other squares hold B.n - A.n mines
+    if (A === B || A.s.length >= B.s.length || !A.s.every((j) => B.s.includes(j))) continue;
+    const rest = B.s.filter((j) => !A.s.includes(j)), k = B.n - A.n;
+    if (k === 0) for (const j of rest) sure.push({ i: j, act: "dig" });
+    else if (k === rest.length) for (const j of rest) sure.push({ i: j, act: "flag" });
+  }
+  const near = (list) => { const d = (i) => Math.hypot((i % g.cols) + 0.5 - b.x, Math.floor(i / g.cols) + 0.5 - b.y); return list.sort((a, c) => d(a.i) - d(c.i)).slice(0, 4)[Math.floor(Math.random() * Math.min(4, list.length))]; };
+  const free = sure.filter((s) => !claimed.has(s.i));
+  if (free.length) return near(free);
+  // No sure move: guess like a person. A square next to numbers is as risky as its worst number says; any other hidden square, as risky as the field overall.
+  const risk = new Map();
+  for (const r of rules) for (const j of r.s) risk.set(j, Math.max(risk.get(j) || 0, r.n / r.s.length));
+  let hiddenLeft = 0, flagged = 0;
+  for (const c of cells) { if (c === ".") hiddenLeft++; else if (isFlag(c) || c === "x") flagged++; }
+  const elsewhere = Math.max(0, g.mines - flagged) / Math.max(1, hiddenLeft), options = [];
+  for (let i = 0; i < cells.length; i++) if (cells[i] === "." && !claimed.has(i)) options.push({ i, act: "dig", guess: true, p: risk.has(i) ? risk.get(i) : elsewhere });
+  if (!options.length) return null;
+  if (Math.random() < CONFIG.botMistake) return near(options); // a careless guess
+  const best = Math.min(...options.map((o) => o.p));
+  return near(options.filter((o) => o.p <= best + 0.01));
 }
 /** Glide the cursor to the target (fast far away, gentle up close), then dig or flag it. */
 function botTick(b, dt, now, g) {
   if (g.phase !== "play") { b.target = null; return; }
   if (!b.target && now > b.readyAt) { b.target = botPlan(b, g); if (b.target && b.target.guess) b.readyAt = now + rnd(...CONFIG.botThinkMs); } // a guess: hesitate first
   if (!b.target) return;
+  if (b.target.first && g.safe >= 0) { b.target = null; return; } // someone else made the first dig: read the numbers instead of digging blind
   const tx = (b.target.i % g.cols) + 0.5, ty = Math.floor(b.target.i / g.cols) + 0.5, dx = tx - b.x, dy = ty - b.y, d = Math.hypot(dx, dy);
   const step = Math.min(d, Math.max(3, d * 5) * dt);
   if (d > 0.01) { b.x += (dx / d) * step; b.y += (dy / d) * step; }
@@ -381,14 +395,14 @@ function viewCells(g) {
 const cv = document.getElementById("game"), ctx = cv.getContext("2d");
 let W = 0, H = 0, DPR = 1;
 const cam = { x: 15, y: 8, z: 30, flip: false, user: false, shake: 0 };
-const TOP = () => (ATTRACT ? 0 : 56), BOTTOM = () => (ATTRACT ? 0 : touchUI ? 40 : 30);
+const TOP = () => (ATTRACT ? 0 : 56), BOTTOM = () => (ATTRACT ? 0 : touchUI ? 116 : 30); // touch: room for the Dig/Flag button under the field
 function fit() { DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight; cv.width = W * DPR; cv.height = H * DPR; cam.user = false; }
 addEventListener("resize", fit); addEventListener("orientationchange", fit); fit();
 /** The camera works in "view" space: the field turned sideways (x and y swapped) on a tall screen. */
 function frameField(g) {
   cam.flip = !ATTRACT && H > W && g.cols > g.rows;
   const vw = cam.flip ? g.rows : g.cols, vh = cam.flip ? g.cols : g.rows;
-  cam.fit = Math.min((W - 16) / vw, (H - TOP() - BOTTOM() - 8) / vh);
+  cam.fit = Math.min((W - 16 - (ATTRACT || touchUI ? 0 : 124)) / vw, (H - TOP() - BOTTOM() - 8) / vh); // 124: keep the zoom buttons (right) off the field, centered
   if (ATTRACT) { // the preview: closer in, drifting after the bots' cursors
     const bots = [...host.bots.values()], fx = bots.length ? bots.reduce((s, b) => s + b.x, 0) / bots.length : vw / 2, fy = bots.length ? bots.reduce((s, b) => s + b.y, 0) / bots.length : vh / 2;
     cam.z = Math.max(W / vw, H / vh) * 1.6;
@@ -533,7 +547,7 @@ function toast(text, ms = 1800) { const t = $("toast"); t.textContent = text; t.
 function hud(g, cells) {
   if (ATTRACT) return;
   const flags = [...cells].filter((c) => isFlag(c) || c === "x").length;
-  $("left").textContent = `💣 ${g.mines - flags}`;
+  $("left").textContent = `💣 ${g.phase === "won" ? 0 : g.mines - flags}`; // cleared: every mine is found
   $("lives").textContent = "❤️".repeat(g.lives) + "🖤".repeat(Math.max(0, g.maxLives - g.lives));
   $("clock").textContent = fmt(g.phase === "won" ? g.winMs : g.startAt ? Date.now() - g.startAt : 0);
   const n = livePlayers().length;
@@ -555,12 +569,12 @@ function onPhase(g, cells) {
   $("boardBox").hidden = g.phase !== "won";
   if (g.phase !== "won") return;
   const list = $("board");
-  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
+  if (!board) { list.innerHTML = "<li class='note'>Leaderboards need a connection.</li>"; return; }
   const submit = me.played === g.id && me.submitted !== g.id ? board.submit(Math.max(0, 3600000 - g.winMs)).catch(() => null) : Promise.resolve();
-  me.submitted = g.id; list.innerHTML = "<li>Loading…</li>";
+  me.submitted = g.id; list.innerHTML = "<li class='note'>Loading…</li>";
   submit.then(() => board.top(10)).then(({ entries }) => {
-    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${fmt(3600000 - e.score)}</span></li>`).join("") : "<li>No clears yet. Be the first.</li>";
-  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${fmt(3600000 - e.score)}</span></li>`).join("") : "<li class='note'>No clears yet. Be the first.</li>";
+  }).catch(() => { list.innerHTML = "<li class='note'>Couldn't load the leaderboard.</li>"; });
 }
 function onLives(g) { // a boom: say who, and how many lives are left
   if (g.lives === lastLives) return;
@@ -641,7 +655,7 @@ addEventListener("keydown", (e) => {
   wake();
   if (e.key === "+" || e.key === "=") zoomAt(1.25, W / 2, midY());
   if (e.key === "-") zoomAt(0.8, W / 2, midY());
-  if ((e.key === "f" || e.key === " ") && me.hover) { e.preventDefault(); act("flag", Math.floor(me.hover[0]), Math.floor(me.hover[1])); }
+  if ((e.key === "f" || e.key === "F" || e.key === " ") && me.hover) { e.preventDefault(); act("flag", Math.floor(me.hover[0]), Math.floor(me.hover[1])); }
 });
 document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
 
